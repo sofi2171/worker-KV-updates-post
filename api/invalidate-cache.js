@@ -6,7 +6,7 @@ export const config = {
 
 export default async function handler(req, res) {
 
-    res.setHeader("Access-Control-Allow-Origin", "https://healthjobportal.com");
+    res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
@@ -29,7 +29,13 @@ export default async function handler(req, res) {
             }
         );
 
-        const verifyData = await verifyRes.json();
+        const verifyText = await verifyRes.text();
+        let verifyData;
+        try {
+            verifyData = JSON.parse(verifyText);
+        } catch(e) {
+            return res.status(401).json({ error: "Firebase verify parse failed", raw: verifyText });
+        }
 
         if (!verifyData.users || verifyData.users.length === 0) {
             return res.status(401).json({ error: "Unauthorized: Invalid token" });
@@ -41,7 +47,7 @@ export default async function handler(req, res) {
             return res.status(400).json({ error: "Bad Request: slug required" });
         }
 
-        // Cloudflare Worker کو server side سے call
+        // Cloudflare Worker کو call کریں
         const cfRes = await fetch(
             `${process.env.CLOUDFLARE_WORKER_URL}/api/invalidate-cache`,
             {
@@ -54,7 +60,18 @@ export default async function handler(req, res) {
             }
         );
 
-        const cfData = await cfRes.json();
+        // ✅ پہلے text پڑھو، پھر parse کرو
+        const cfText = await cfRes.text();
+        let cfData;
+        try {
+            cfData = JSON.parse(cfText);
+        } catch(e) {
+            return res.status(500).json({ 
+                error: "CF Worker response parse failed", 
+                raw: cfText,
+                status: cfRes.status
+            });
+        }
 
         if (!cfRes.ok) {
             return res.status(500).json({ error: "KV invalidation failed", detail: cfData });
@@ -66,4 +83,4 @@ export default async function handler(req, res) {
         console.error("invalidate-cache error:", err);
         return res.status(500).json({ error: "Internal Server Error", detail: err.message });
     }
-}
+    }
