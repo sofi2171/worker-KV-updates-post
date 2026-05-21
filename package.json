@@ -1,0 +1,17 @@
+{
+  "name": "health-jobs-backend",
+  "version": "1.0.0",
+  "description": "Health Jobs Portal Backend API",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "node-fetch": "^3.3.2"
+  },
+  "engines": {
+    "node": ">=18.x"
+  }
+}
