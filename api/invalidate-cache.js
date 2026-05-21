@@ -1,11 +1,4 @@
-export const config = {
-    api: {
-        bodyParser: true,
-    },
-};
-
 export default async function handler(req, res) {
-
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
@@ -13,74 +6,50 @@ export default async function handler(req, res) {
     if (req.method === "OPTIONS") return res.status(204).end();
     if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
 
+    // 1. لاگ ان چیک کریں
     const authHeader = req.headers.authorization || "";
-    const idToken = authHeader.replace("Bearer ", "").trim();
-
-    if (!idToken) return res.status(401).json({ error: "Unauthorized: No token" });
+    if (!authHeader) return res.status(401).json({ error: "Missing Auth Header" });
 
     try {
-        // Firebase token verify
-        const verifyRes = await fetch(
-            `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${process.env.FIREBASE_API_KEY}`,
-            {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ idToken })
-            }
-        );
+        const { slug, postId, updatedData } = req.body;
 
-        const verifyText = await verifyRes.text();
-        let verifyData;
-        try {
-            verifyData = JSON.parse(verifyText);
-        } catch(e) {
-            return res.status(401).json({ error: "Firebase verify parse failed", raw: verifyText });
-        }
+        // 2. ویری ایبلز کی جانچ (یہاں پتہ چلے گا کہ کیا ڈیٹا خالی آ رہا ہے)
+        if (!process.env.ADMIN_SECRET) throw new Error("Environment Variable ADMIN_SECRET is missing on Server");
+        if (!process.env.CLOUDFLARE_WORKER_URL) throw new Error("CLOUDFLARE_WORKER_URL is missing");
 
-        if (!verifyData.users || verifyData.users.length === 0) {
-            return res.status(401).json({ error: "Unauthorized: Invalid token" });
-        }
+        // 3. کلاؤڈ فلیر ورکر کو کال کریں
+        const targetUrl = `${process.env.CLOUDFLARE_WORKER_URL}/api/invalidate-cache`;
+        
+        const cfRes = await fetch(targetUrl, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "x-admin-secret": process.env.ADMIN_SECRET 
+            },
+            body: JSON.stringify({ slug: slug || "unknown-slug" })
+        });
 
-        const { slug } = req.body;
-
-        if (!slug || typeof slug !== "string") {
-            return res.status(400).json({ error: "Bad Request: slug required" });
-        }
-
-        // Cloudflare Worker کو call کریں
-        const cfRes = await fetch(
-            `${process.env.CLOUDFLARE_WORKER_URL}/api/invalidate-cache`,
-            {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "x-admin-secret": process.env.ADMIN_SECRET
-                },
-                body: JSON.stringify({ slug })
-            }
-        );
-
-        // ✅ پہلے text پڑھو، پھر parse کرو
-        const cfText = await cfRes.text();
-        let cfData;
-        try {
-            cfData = JSON.parse(cfText);
-        } catch(e) {
-            return res.status(500).json({ 
-                error: "CF Worker response parse failed", 
-                raw: cfText,
-                status: cfRes.status
+        // 4. رسپانس کا تجزیہ
+        const responseText = await cfRes.text();
+        
+        if (!cfRes.ok) {
+            // یہاں آپ کو واضح پتہ چلے گا کہ ورکر کیوں فیل ہوا (403, 404, یا 500)
+            return res.status(cfRes.status).json({ 
+                error: "Cloudflare Worker Error", 
+                status: cfRes.status,
+                rawResponse: responseText 
             });
         }
 
-        if (!cfRes.ok) {
-            return res.status(500).json({ error: "KV invalidation failed", detail: cfData });
-        }
-
-        return res.status(200).json({ success: true, message: `KV cache cleared for: ${slug}` });
+        return res.status(200).json({ success: true, message: "Cache cleared", workerResponse: responseText });
 
     } catch (err) {
-        console.error("invalidate-cache error:", err);
-        return res.status(500).json({ error: "Internal Server Error", detail: err.message });
+        // 5. اگر کوڈ میں کوئی بھی ایرر (جیسے نیٹ ورک فیل ہونا) ہوا تو یہاں سے پتہ چلے گا
+        console.error("Backend Error Detail:", err);
+        return res.status(500).json({ 
+            error: "Internal Server Error", 
+            message: err.message,
+            stack: err.stack // یہ آپ کو بتائے گا کہ کس لائن پر کوڈ ٹوٹا
+        });
     }
-    }
+}
