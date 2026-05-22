@@ -2,54 +2,65 @@ export default async function handler(req, res) {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-
+    
     if (req.method === "OPTIONS") return res.status(204).end();
     if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
 
-    // 1. لاگ ان چیک کریں
     const authHeader = req.headers.authorization || "";
     if (!authHeader) return res.status(401).json({ error: "Missing Auth Header" });
 
     try {
-        const { slug, postId, updatedData } = req.body;
+        const { slug, postId, type } = req.body;
 
-        // 2. ویری ایبلز کی جانچ (یہاں پتہ چلے گا کہ کیا ڈیٹا خالی آ رہا ہے)
-        if (!process.env.ADMIN_SECRET) throw new Error("Environment Variable ADMIN_SECRET is missing on Server");
-        if (!process.env.CLOUDFLARE_WORKER_URL) throw new Error("CLOUDFLARE_WORKER_URL is missing");
+        if (!process.env.ADMIN_SECRET)
+            throw new Error("ADMIN_SECRET missing");
+        if (!process.env.CLOUDFLARE_WORKER_URL)
+            throw new Error("CLOUDFLARE_WORKER_URL missing");
 
-        // 3. کلاؤڈ فلیر ورکر کو کال کریں
+        // ── Clean slug — NO prefix, Worker khud add karta hai ────────────────
+        const finalSlug = slug || postId || "unknown-slug";
         const targetUrl = `${process.env.CLOUDFLARE_WORKER_URL}/api/invalidate-cache`;
-        
+
+        const isUpdate  = type === "general_post";
+        const isJob     = type === "employer_post" || type === "candidate_post";
+        const clearBoth = !type || type === "both";
+
+        // ── Worker ko call karo — clean slug bhejo ────────────────────────────
         const cfRes = await fetch(targetUrl, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
-                "x-admin-secret": process.env.ADMIN_SECRET 
+                "x-admin-secret": process.env.ADMIN_SECRET
             },
-            body: JSON.stringify({ slug: slug || "unknown-slug" })
+            body: JSON.stringify({
+                slug: finalSlug,       // ✅ sirf clean slug, koi prefix nahi
+                type: type || "both"   // ✅ type bhej do taake Worker decide kare
+            })
         });
 
-        // 4. رسپانس کا تجزیہ
-        const responseText = await cfRes.text();
-        
+        const text = await cfRes.text();
+
         if (!cfRes.ok) {
-            // یہاں آپ کو واضح پتہ چلے گا کہ ورکر کیوں فیل ہوا (403, 404, یا 500)
-            return res.status(cfRes.status).json({ 
-                error: "Cloudflare Worker Error", 
-                status: cfRes.status,
-                rawResponse: responseText 
+            return res.status(207).json({
+                success: false,
+                message: "Worker cache clear failed",
+                workerStatus: cfRes.status,
+                workerResponse: text
             });
         }
 
-        return res.status(200).json({ success: true, message: "Cache cleared", workerResponse: responseText });
+        return res.status(200).json({
+            success: true,
+            message: `Cache cleared for: ${finalSlug}`,
+            type: type || "both",
+            workerResponse: text
+        });
 
     } catch (err) {
-        // 5. اگر کوڈ میں کوئی بھی ایرر (جیسے نیٹ ورک فیل ہونا) ہوا تو یہاں سے پتہ چلے گا
-        console.error("Backend Error Detail:", err);
-        return res.status(500).json({ 
-            error: "Internal Server Error", 
-            message: err.message,
-            stack: err.stack // یہ آپ کو بتائے گا کہ کس لائن پر کوڈ ٹوٹا
+        console.error("Backend Error:", err);
+        return res.status(500).json({
+            error: "Internal Server Error",
+            message: err.message
         });
     }
 }
